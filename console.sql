@@ -4,6 +4,8 @@ CREATE TABLE courses
     name    VARCHAR(200) NOT NULL,
     credits DECIMAL      NOT NULL
 );
+-- add a new column so we can do the GIN index, can be null for all teh otehr values
+ALTER TABLE courses ADD COLUMN tags TEXT[] ;
 CREATE TABLE video
 (
     id      Serial PRIMARY KEY,
@@ -31,6 +33,7 @@ CREATE TABLE enrollments
     course_id   INT NOT NULL,
     student_id  INT NOT NULL,
     enrolled_at DATE,
+    active_period DATERANGE,
 
     PRIMARY KEY (course_id, student_id),
 
@@ -67,35 +70,42 @@ CREATE TABLE choice
     FOREIGN KEY (question_id) REFERENCES question (id) ON DELETE CASCADE
 );
 
+
 CREATE TABLE attempt
 (
-    id         SERIAL PRIMARY KEY,
+    id         SERIAL NOT NULL,
     quiz_id    INT NOT NULL,
     student_id INT NOT NULL,
-    taken_at   DATE,
+    taken_at   DATE NOT NULL,
     total      DECIMAL,
 
-    UNIQUE (quiz_id, student_id),
+    UNIQUE (id, taken_at),
+    UNIQUE (quiz_id, student_id, taken_at),
 
     FOREIGN KEY (quiz_id) REFERENCES quiz (id) ON DELETE CASCADE,
     FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE
-);
+) PARTITION BY RANGE (taken_at);
+CREATE TABLE attempt_2024_01 PARTITION OF attempt FOR VALUES FROM ('2024-01-01') TO ('2024-01-31');
+CREATE TABLE attempt_2024_02 PARTITION OF attempt FOR VALUES FROM ('2024-02-01') TO ('2024-02-29');
+
 
 CREATE TABLE answer
 (
     id              SERIAL PRIMARY KEY,
     attempt_id      INT NOT NULL,
+    attempt_date    DATE NOT NULL,
     question_id     INT NOT NULL,
     selected_option TEXT,
 
-    FOREIGN KEY (attempt_id)
-        REFERENCES attempt (id)
+    FOREIGN KEY (attempt_id, attempt_date)
+        REFERENCES attempt (id, taken_at)
         ON DELETE CASCADE,
 
     FOREIGN KEY (question_id)
         REFERENCES question (id)
         ON DELETE CASCADE
 );
+
 
 CREATE TABLE course_instructor
 (
@@ -122,6 +132,9 @@ VALUES ('Introduction to Python', 3),
        ('Database Design', 4),
        ('Data Structures', 3);
 
+UPDATE courses SET tags =ARRAY['python', 'web', 'database'] WHERE name = 'Introduction to Python';
+UPDATE courses SET tags =ARRAY['web', 'database'] WHERE name = 'Web Development Basics';
+
 -- students
 INSERT INTO students (name, email)
 VALUES ('Alice Johnson', 'alice@email.com'),
@@ -146,14 +159,14 @@ VALUES (1, 1),
        (4, 2);
 
 -- enrollments
-INSERT INTO enrollments (course_id, student_id, enrolled_at)
-VALUES (1, 1, '2024-01-10'),
-       (1, 2, '2024-01-11'),
-       (2, 2, '2024-01-12'),
-       (2, 3, '2024-01-13'),
-       (3, 1, '2024-01-14'),
-       (3, 4, '2024-01-15'),
-       (4, 3, '2024-01-16');
+INSERT INTO enrollments (course_id, student_id, enrolled_at, active_period)
+VALUES (1, 1, '2024-01-10', '[2024-01-10, 2024-06-10)'),
+       (1, 2, '2024-01-11', '[2024-01-11, 2024-06-11)'),
+       (2, 2, '2024-01-12', '[2024-01-12, 2024-07-12)'),
+       (2, 3, '2024-01-13', '[2024-01-13, 2024-07-13)'),
+       (3, 1, '2024-01-14', '[2024-01-14, 2024-08-14)'),
+       (3, 4, '2024-01-15', '[2024-01-15, 2024-08-15)'),
+       (4, 3, '2024-01-16', '[2024-01-16, 2024-08-16)');
 
 -- quiz
 INSERT INTO quiz (course_id, score)
@@ -200,9 +213,9 @@ VALUES (1, 'A snake', false),
 
 -- attempt
 INSERT INTO attempt (quiz_id, student_id, taken_at, total)
-VALUES (1, 1, '2024-02-01', 75),
-       (1, 2, '2024-02-02', 100),
-       (2, 1, '2024-02-03', 50),
+VALUES (1, 1, '2024-01-01', 75),
+       (1, 2, '2024-01-02', 100),
+       (2, 1, '2024-01-03', 50),
        (3, 2, '2024-02-04', 80),
        (3, 3, '2024-02-05', 60);
 
@@ -215,18 +228,17 @@ VALUES (1, 4, '2024-02-01', 65);
 
 
 -- answer
-INSERT INTO answer (attempt_id, question_id, selected_option)
-VALUES (1, 1, 'A programming language'),
-       (1, 2, 'A container for storing data'),
-       (1, 3, 'A variable'),
-       (1, 4, 'A reusable block of code'),
-       (2, 1, 'A programming language'),
-       (2, 2, 'A container for storing data'),
-       (2, 3, 'A repeating block of code'),
-       (2, 4, 'A reusable block of code'),
-       (3, 5, 'HyperText Markup Language'),
-       (3, 6, 'Cascading Style Sheets');
-
+INSERT INTO answer (attempt_id, attempt_date, question_id, selected_option)
+VALUES (1, '2024-01-01', 1, 'A programming language'),
+       (1, '2024-01-01', 2, 'A container for storing data'),
+       (1, '2024-01-01', 3, 'A variable'),
+       (1, '2024-01-01', 4, 'A reusable block of code'),
+       (2, '2024-01-02', 1, 'A programming language'),
+       (2, '2024-01-02', 2, 'A container for storing data'),
+       (2, '2024-01-02', 3, 'A repeating block of code'),
+       (2, '2024-01-02', 4, 'A reusable block of code'),
+       (3, '2024-01-03', 5, 'HyperText Markup Language'),
+       (3, '2024-01-03', 6, 'Cascading Style Sheets');
 
 -- Queries
 SELECT *
@@ -249,6 +261,7 @@ SELECT *
 FROM answer;
 SELECT *
 FROM course_instructor;
+
 
 -- number of students enrolled in each course
 SELECT c.name, COUNT(*)
@@ -315,3 +328,88 @@ SELECT c.name AS course, i.name AS instructor
 FROM courses c
          JOIN course_instructor ci ON ci.course_id = c.id
          JOIN instructor i ON i.id = ci.instructor_id;
+
+
+-- Task 2
+
+EXPLAIN ANALYZE SELECT * FROM students;
+CREATE INDEX idx_students_email ON students(email);
+EXPLAIN (ANALYZE, FORMAT TEXT) SELECT * FROM students WHERE email = 'alice@email.com';
+--  difference between with index and without index
+-- CREATE INDEX idx_students_email ON students(email);
+--  so that the index is used.
+SET enable_seqscan = OFF;
+EXPLAIN ANALYZE SELECT * FROM students WHERE email = 'alice@email.com';
+
+-- types of indexes
+-- b tree: O(log n) lookup time. works like a BST, works for equality, ranges, orderBy, and Between lookups.
+CREATE INDEX idx_students_email ON students(email);
+-- hash index:this converts teh value into a hash value and stores it in the index. O(1) lookup time. only works for equality lookups.
+-- analyse the execution time of the query before hash index
+-- execution time 0.047 ms   Rows Removed by Filter: 3
+EXPLAIN (ANALYZE, FORMAT TEXT ) SELECT * FROM courses WHERE name = 'Introduction to Python';
+
+CREATE INDEX  idx_courses_name ON courses USING HASH (name);
+SET enable_seqscan = OFF;
+--   (cost=0.00..8.02 rows=1 width=486)  execution time 0.027 ms NO ROWS REMOVED BY FILTER
+EXPLAIN (ANALYZE, FORMAT TEXT ) SELECT * FROM courses WHERE name = 'Introduction to Python';
+SET enable_seqscan = ON;
+
+
+--GIN index O(log n ): builds a match map
+-- teh execution time was 0.041ms without index
+SET enable_seqscan = ON;
+EXPLAIN (ANALYZE, FORMAT TEXT) SELECT * FROM courses WHERE tags @> ARRAY['python'];
+-- create an index on the tags column
+CREATE INDEX idx_courses_tags ON courses USING GIN (tags);
+
+SELECT * FROM courses WHERE tags @> ARRAY['python'];
+SET enable_seqscan = OFF;
+-- the execution time 0.065ms because the table is small therefore using an index that create a bitmap is actually slower than a sequential scan.
+EXPLAIN ANALYZE SELECT * FROM courses WHERE tags @> ARRAY['python'];
+
+SET enable_seqscan = ON;
+
+-- gist index: O(log n) lookup time.
+CREATE INDEX idx_enrollments_active_period ON enrollments USING GIST (active_period);
+-- OVERLAP
+-- WITHOUT : 0.062 ms
+EXPLAIN (ANALYZE, FORMAT TEXT) SELECT * FROM enrollments WHERE active_period && '[2024-01-10, 2024-07-12)';
+
+SET enable_seqscan = OFF;
+-- Execution Time: 0.037 ms
+EXPLAIN (ANALYZE, FORMAT TEXT) SELECT * FROM enrollments WHERE active_period && '[2024-01-10, 2024-07-12)';
+
+SET enable_seqscan = ON;
+
+
+-- Materialized views
+CREATE MATERIALIZED VIEW  student_quiz_scores AS
+SELECT s.id AS student_id, s.name, q.id AS quiz_id, q.score, a.total
+FROM students s
+         JOIN attempt a ON a.student_id = s.id
+         JOIN quiz q ON q.id = a.quiz_id;
+-- WE HAVE TO DO THIS OR THE DATA WILL NOT BE UPDATED(STALE)
+REFRESH MATERIALIZED VIEW student_quiz_scores;
+SELECT * FROM student_quiz_scores;
+
+SELECT * from student_quiz_scores WHERE total>70;
+-- avg score per student
+SELECT student_id,name,AVG(total)from student_quiz_scores
+group by name,student_id;
+-- score and avg per quiz
+SELECT student_id,name,quiz_id,total,
+       AVG(total) OVER (PARTITION BY quiz_id) AS AVG FROM student_quiz_scores;
+
+-- Partitions
+SELECT * FROM attempt
+                WHERE taken_at >= '2024-02-01' AND taken_at < '2024-03-01' ORDER BY taken_at ASC ;
+
+SELECT * FROM attempt_2024_01;
+SELECT * FROM attempt_2024_02;
+
+SELECT * FROM attempt_2024_02 WHERE taken_at = '2024-02-01';
+
+SELECT * FROM attempt Where taken_at = '2024-02-01';
+
+
