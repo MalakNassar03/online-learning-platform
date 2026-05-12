@@ -106,6 +106,90 @@ CREATE TABLE answer
         ON DELETE CASCADE
 );
 
+CREATE TABLE audit_log (
+                           id              SERIAL PRIMARY KEY,
+                           table_name      TEXT,
+                           record_id       TEXT,
+                           operation_type  TEXT,
+                           changed_at      TIMESTAMP DEFAULT now(),
+                           changed_by      TEXT,
+                           original_values JSONB,
+                           new_values      JSONB
+);
+
+-- trigger function to auto-fill attempt_date
+CREATE OR REPLACE FUNCTION fill_attempt_date()
+    RETURNS TRIGGER AS $$
+BEGIN
+--      fire before the row is saved so we can modify it
+    SELECT taken_at INTO NEW.attempt_date
+    FROM attempt
+    WHERE id = NEW.attempt_id;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- step 5: attach BEFORE INSERT trigger on answer
+CREATE TRIGGER auto_fill_attempt_date
+    BEFORE INSERT ON answer
+    FOR EACH ROW
+EXECUTE FUNCTION fill_attempt_date();
+
+
+CREATE OR REPLACE FUNCTION audit_trigger()
+    RETURNS TRIGGER AS $$
+DECLARE
+    new_data   JSONB;
+    old_data   JSONB;
+    key        TEXT;
+    new_values JSONB := '{}';
+    old_values JSONB := '{}';
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        new_values := to_jsonb(NEW);
+
+    ELSIF TG_OP = 'UPDATE' THEN
+        new_data := to_jsonb(NEW);
+        old_data := to_jsonb(OLD);
+        FOR key IN
+            SELECT jsonb_object_keys(new_data)
+            INTERSECT
+            SELECT jsonb_object_keys(old_data)
+            LOOP
+                IF new_data ->> key != old_data ->> key THEN
+                    new_values := new_values || jsonb_build_object(key, new_data ->> key);
+                    old_values := old_values || jsonb_build_object(key, old_data ->> key);
+                END IF;
+            END LOOP;
+
+    ELSIF TG_OP = 'DELETE' THEN
+        old_values := to_jsonb(OLD);
+    END IF;
+
+    IF TG_OP = 'INSERT' OR TG_OP = 'UPDATE' THEN
+        INSERT INTO audit_log
+        (table_name, record_id, operation_type, changed_by, original_values, new_values)
+        VALUES
+            (TG_TABLE_NAME, NEW.id::TEXT, TG_OP, current_user, old_values, new_values);
+        RETURN NEW;
+    ELSE
+        INSERT INTO audit_log
+        (table_name, record_id, operation_type, changed_by, original_values, new_values)
+        VALUES
+            (TG_TABLE_NAME, OLD.id::TEXT, TG_OP, current_user, old_values, new_values);
+        RETURN OLD;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE TRIGGER audit_log_trigger
+    AFTER INSERT OR UPDATE OR DELETE ON attempt
+    FOR EACH ROW EXECUTE FUNCTION audit_trigger();
+
+CREATE TRIGGER audit_log_trigger
+    AFTER INSERT OR UPDATE OR DELETE ON answer
+    FOR EACH ROW EXECUTE FUNCTION audit_trigger();
 
 CREATE TABLE course_instructor
 (
@@ -228,17 +312,20 @@ VALUES (1, 4, '2024-02-01', 65);
 
 
 -- answer
-INSERT INTO answer (attempt_id, attempt_date, question_id, selected_option)
-VALUES (1, '2024-01-01', 1, 'A programming language'),
-       (1, '2024-01-01', 2, 'A container for storing data'),
-       (1, '2024-01-01', 3, 'A variable'),
-       (1, '2024-01-01', 4, 'A reusable block of code'),
-       (2, '2024-01-02', 1, 'A programming language'),
-       (2, '2024-01-02', 2, 'A container for storing data'),
-       (2, '2024-01-02', 3, 'A repeating block of code'),
-       (2, '2024-01-02', 4, 'A reusable block of code'),
-       (3, '2024-01-03', 5, 'HyperText Markup Language'),
-       (3, '2024-01-03', 6, 'Cascading Style Sheets');
+INSERT INTO answer (attempt_id, question_id, selected_option)
+VALUES (1, 1, 'A programming language'),
+       (1, 2, 'A container for storing data'),
+       (1, 3, 'A variable'),
+       (1, 4, 'A reusable block of code'),
+       (2, 1, 'A programming language'),
+       (2, 2, 'A container for storing data'),
+       (2, 3, 'A repeating block of code'),
+       (2, 4, 'A reusable block of code'),
+       (3, 5, 'HyperText Markup Language'),
+       (3, 6, 'Cascading Style Sheets');
+
+SELECT * FROM audit_log;
+
 
 -- Queries
 SELECT *
